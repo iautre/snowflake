@@ -10,6 +10,7 @@ package snowflake
 
 import (
 	"log"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -27,8 +28,9 @@ type Snowflake struct {
 }
 
 const (
-	// 工作
-	WORKER_ID_BITS      int64 = 5
+	// 工作id
+	WORKER_ID_BITS int64 = 5
+	//数据中心id
 	DATA_CENTER_ID_BITS int64 = 5
 	//最大值
 	MAX_WORKER_ID      int64 = -1 ^ (-1 << WORKER_ID_BITS)
@@ -70,6 +72,9 @@ func (s *Snowflake) WithWorkerId(workerId int64) *Snowflake {
 func (s *Snowflake) WithDatacenterId(datacenterId int64) *Snowflake {
 	s.datacenterId = datacenterId
 	return s
+}
+func (s *Snowflake) String() string {
+	return strconv.FormatInt(s.NextId(), 10)
 }
 func (s *Snowflake) NextId() int64 {
 	s.mu.Lock()
@@ -113,4 +118,11 @@ var ID *Snowflake
 
 func init() {
 	ID = NewSnowflake()
+}
+
+func NextId() int64 {
+	return ID.NextId()
+}
+func String() string {
+	return strconv.FormatInt(ID.NextId(), 10)
 }
