@@ -45,3 +45,12 @@ func TestHex(t *testing.T) {
 	t.Log(s)
 	t.Log(strconv.FormatInt(22, 36))
 }
+
+func TestXxx(t *testing.T) {
+	sf := NewSnowflake().WithTwepoch(1655647200000).WithWorkerId(1).WithDatacenterId(1)
+	var id int64 = sf.NextId()
+	t.Log(id)
+	var idStr string = sf.String()
+	t.Log(idStr)
+
+}
