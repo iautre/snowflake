@@ -1,9 +1,3 @@
-/**
- * @Author: a little
- * @Blog: https://coding.autre.cn
- * @Last Modified time: 2022-06-16 22:25:20
- */
-
 // Twitter的Snowflake 算法
 // 参考 hutool java版本https://gitee.com/dromara/hutool/blob/v5-master/hutool-core/src/main/java/cn/hutool/core/lang/Snowflake.java
 package snowflake

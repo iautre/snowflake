@@ -4,9 +4,10 @@
 #### 引入包
 ```
 go get github.com/iautre/snowflake
-
 ```
+
 #### 直接使用
+
 ```
 import (
 	……
@@ -18,7 +19,9 @@ func Test(){
     var idStr string = snowflake.String()
 }
 ```
+
 #### 自定义开始时间，工作机器节点id，数据中心ID
+
 ```
 import (
 	……
@@ -30,3 +33,8 @@ func Test(){
     var id int64 = sf.NextId()
     var idStr string = sf.String()
 }
+```
+
+### 感谢
+
+ 参考 [hutool](https://gitee.com/dromara/hutool) [java版本](https://gitee.com/dromara/hutool/blob/v5-master/hutool-core/src/main/java/cn/hutool/core/lang/Snowflake.java)
