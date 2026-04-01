@@ -10,17 +10,17 @@ func TestNextIDConcurrentUnique(t *testing.T) {
 	sf := NewSnowflake()
 	var wg sync.WaitGroup
 	list := make([]int64, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
-		go func(idx int) {
+		go func() {
 			defer wg.Done()
 			id, err := sf.NextID()
 			if err != nil {
 				t.Errorf("NextID: %v", err)
 				return
 			}
-			list[idx] = id
-		}(i)
+			list[i] = id
+		}()
 	}
 	wg.Wait()
 	seen := make(map[int64]struct{}, n)
@@ -47,6 +47,16 @@ func TestPackageString(t *testing.T) {
 	s := String()
 	if s == "" {
 		t.Fatal("empty string")
+	}
+}
+
+func TestPackageNextString(t *testing.T) {
+	s, err := NextString()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s == "" {
+		t.Fatal("empty NextString")
 	}
 }
 

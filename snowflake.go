@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -45,7 +46,7 @@ const (
 	defaultSequence      int64 = 0
 	DefaultTwepoch       int64 = 1655647200000
 
-	// DEFAULT_TWEPOCH 兼容旧版导出常量名，与 DefaultTwepoch 相同。
+	// Deprecated: DEFAULT_TWEPOCH 兼容旧版导出常量名，请使用 DefaultTwepoch。
 	DEFAULT_TWEPOCH = DefaultTwepoch
 
 	maxTimeSpinIterations = 1_000_000
@@ -150,7 +151,7 @@ func (s *Snowflake) NextID() (int64, error) {
 	return id, nil
 }
 
-// NextId 兼容旧 API：出错时 panic。新代码请用 NextID。
+// Deprecated: NextId 出错时 panic，请使用 NextID。
 func (s *Snowflake) NextId() int64 {
 	id, err := s.NextID()
 	if err != nil {
@@ -168,7 +169,7 @@ func (s *Snowflake) NextString() (string, error) {
 	return strconv.FormatInt(id, 10), nil
 }
 
-// String 实现 fmt.Stringer；语义为再生成一个 ID 的字符串（易误解，优先用 NextString）。
+// Deprecated: String 每次调用都会生成新 ID，语义易误解，请使用 NextString。
 func (s *Snowflake) String() string {
 	str, err := s.NextString()
 	if err != nil {
@@ -178,17 +179,16 @@ func (s *Snowflake) String() string {
 }
 
 func (s *Snowflake) tilNextMillis() (int64, error) {
-	var n int
-	for {
+	for n := range maxTimeSpinIterations {
 		timestamp := s.currentTime()
 		if timestamp > s.lastTimestamp {
 			return timestamp, nil
 		}
-		n++
-		if n >= maxTimeSpinIterations {
-			return 0, ErrTimeNotAdvancing
+		if n&0xff == 0xff {
+			runtime.Gosched()
 		}
 	}
+	return 0, ErrTimeNotAdvancing
 }
 
 func (s *Snowflake) currentTime() int64 {
@@ -207,12 +207,17 @@ func NextID() (int64, error) {
 	return ID.NextID()
 }
 
-// NextId 使用全局默认实例，出错 panic。
+// Deprecated: NextId 出错时 panic，请使用 NextID。
 func NextId() int64 {
 	return ID.NextId()
 }
 
-// String 使用全局实例生成一个 ID 的十进制字符串（与历史版本兼容；出错时 panic，与 NextId 一致）。
+// NextString 使用全局实例生成 ID 的十进制字符串。
+func NextString() (string, error) {
+	return ID.NextString()
+}
+
+// Deprecated: String 出错时 panic，请使用 NextString。
 func String() string {
 	return strconv.FormatInt(NextId(), 10)
 }
