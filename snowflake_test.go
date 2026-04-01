@@ -1,56 +1,65 @@
 package snowflake
 
 import (
-	"strconv"
 	"sync"
 	"testing"
 )
 
-var wg sync.WaitGroup
-var muList sync.Mutex = sync.Mutex{}
-
-func TestId(t *testing.T) {
-	var n = 0
-	var list []int64 = []int64{}
-	for {
-		n++
-		if n == 10000 {
-			break
-		}
+func TestNextIDConcurrentUnique(t *testing.T) {
+	const n = 10000
+	sf := NewSnowflake()
+	var wg sync.WaitGroup
+	list := make([]int64, n)
+	for i := 0; i < n; i++ {
 		wg.Add(1)
-		go func() {
+		go func(idx int) {
 			defer wg.Done()
-			ids := ID.NextId()
-			t.Log(ids)
-			muList.Lock()
-			list = append(list, ids)
-			muList.Unlock()
-		}()
-
-		//time.Sleep(1000 * 1e6)
-
+			id, err := sf.NextID()
+			if err != nil {
+				t.Errorf("NextID: %v", err)
+				return
+			}
+			list[idx] = id
+		}(i)
 	}
 	wg.Wait()
-	tempMap := map[int64]byte{}
-	for _, e := range list {
-		tempMap[e] = 0
+	seen := make(map[int64]struct{}, n)
+	for _, id := range list {
+		if _, ok := seen[id]; ok {
+			t.Fatalf("duplicate id: %d", id)
+		}
+		seen[id] = struct{}{}
 	}
-	t.Log(len(tempMap))
-	t.Log(len(list))
-
+	if len(seen) != n {
+		t.Fatalf("want %d unique ids, got %d", n, len(seen))
+	}
 }
 
-func TestHex(t *testing.T) {
+func TestInvalidWorkerConfig(t *testing.T) {
+	s := NewSnowflake().WithWorkerId(32)
+	_, err := s.NextID()
+	if err == nil {
+		t.Fatal("expected error for worker id 32")
+	}
+}
+
+func TestPackageString(t *testing.T) {
 	s := String()
-	t.Log(s)
-	t.Log(strconv.FormatInt(22, 36))
+	if s == "" {
+		t.Fatal("empty string")
+	}
 }
 
-func TestXxx(t *testing.T) {
-	sf := NewSnowflake().WithTwepoch(1655647200000).WithWorkerId(1).WithDatacenterId(1)
-	var id int64 = sf.NextId()
-	t.Log(id)
-	var idStr string = sf.String()
-	t.Log(idStr)
-
+func TestCustomSnowflake(t *testing.T) {
+	s := NewSnowflake().WithTwepoch(1655647200000).WithWorkerId(1).WithDatacenterId(1)
+	if _, err := s.NextID(); err != nil {
+		t.Fatal(err)
+	}
+	idStr, err := s.NextString()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idStr == "" {
+		t.Fatal("empty NextString")
+	}
 }

@@ -1,134 +1,218 @@
-// Twitter的Snowflake 算法
-// 参考 hutool java版本https://gitee.com/dromara/hutool/blob/v5-master/hutool-core/src/main/java/cn/hutool/core/lang/Snowflake.java
+// Package snowflake 实现 Twitter Snowflake 风格的 int64 ID（毫秒时间戳 + 数据中心 + 机器 + 序列）。
+// 参考 hutool Java Snowflake 实现。
 package snowflake
 
 import (
-	"log"
+	"errors"
+	"fmt"
+	"os"
 	"strconv"
 	"sync"
 	"time"
 )
 
+// 常见错误（可用 errors.Is 判断）。
+var (
+	ErrClockMovedBackwards = errors.New("snowflake: system clock moved backwards")
+	ErrTwepochInFuture     = errors.New("snowflake: twepoch is in the future")
+	ErrInvalidWorkerID     = errors.New("snowflake: worker id out of range 0~31")
+	ErrInvalidDatacenterID = errors.New("snowflake: datacenter id out of range 0~31")
+	ErrTimeNotAdvancing    = errors.New("snowflake: time did not advance (possible clock stall)")
+)
+
 type Snowflake struct {
-	mu sync.Mutex
-	//10位的工作机器id
-	workerId      int64 //5位工作id
-	datacenterId  int64 //5位数据id
-	twepoch       int64 //初始时间戳
-	lastTimestamp int64 //上次时间戳，初始值为负数
-	sequence      int64 //12位序列
+	mu            sync.Mutex
+	workerId      int64
+	datacenterId  int64
+	twepoch       int64
+	lastTimestamp int64
+	sequence      int64
+	err           error
 }
 
 const (
-	// 工作id
-	WORKER_ID_BITS int64 = 5
-	//数据中心id
-	DATA_CENTER_ID_BITS int64 = 5
-	//最大值
-	MAX_WORKER_ID      int64 = -1 ^ (-1 << WORKER_ID_BITS)
-	MAX_DATA_CENTER_ID int64 = -1 ^ (-1 << DATA_CENTER_ID_BITS)
-	//序列号id长度
-	SEQUENCE_BITS int64 = 12
-	//序列号最大值
-	SEQUENCE_MASK int64 = -1 ^ (-1 << SEQUENCE_BITS)
-	//工作id需要左移的位数，12位
-	WORKER_ID_SHIFT int64 = SEQUENCE_BITS
-	//数据id需要左移位数 12+5=17位
+	WORKER_ID_BITS       int64 = 5
+	DATA_CENTER_ID_BITS  int64 = 5
+	MAX_WORKER_ID        int64 = -1 ^ (-1 << WORKER_ID_BITS)
+	MAX_DATA_CENTER_ID   int64 = -1 ^ (-1 << DATA_CENTER_ID_BITS)
+	SEQUENCE_BITS        int64 = 12
+	SEQUENCE_MASK        int64 = -1 ^ (-1 << SEQUENCE_BITS)
+	WORKER_ID_SHIFT      int64 = SEQUENCE_BITS
 	DATA_CENTER_ID_SHIFT int64 = SEQUENCE_BITS + WORKER_ID_BITS
-	//时间戳需要左移位数 12+5+5=22位
 	TIMESTAMP_LEFT_SHIFT int64 = SEQUENCE_BITS + WORKER_ID_BITS + DATA_CENTER_ID_BITS
 
-	// 默认值
-	DEFAULT_LAST_TIMESTAMP int64 = -1
-	// 默认序列开始值
-	DEFAULT_SEQUENCE int64 = 0
-	// 默认时间戳 2022-06-19 22:00:00
-	DEFAULT_TWEPOCH int64 = 1655647200000
+	defaultLastTimestamp int64 = -1
+	defaultSequence      int64 = 0
+	DefaultTwepoch       int64 = 1655647200000
+
+	// DEFAULT_TWEPOCH 兼容旧版导出常量名，与 DefaultTwepoch 相同。
+	DEFAULT_TWEPOCH = DefaultTwepoch
+
+	maxTimeSpinIterations = 1_000_000
 )
 
+// NewSnowflake 创建生成器，worker/datacenter 均为 0。
 func NewSnowflake() *Snowflake {
 	return &Snowflake{
 		workerId:      0,
 		datacenterId:  0,
-		twepoch:       DEFAULT_TWEPOCH,
-		lastTimestamp: DEFAULT_LAST_TIMESTAMP,
-		sequence:      DEFAULT_SEQUENCE,
+		twepoch:       DefaultTwepoch,
+		lastTimestamp: defaultLastTimestamp,
+		sequence:      defaultSequence,
 	}
 }
-func (s *Snowflake) WithTwepoch(twepoch int64) *Snowflake {
-	if twepoch > s.currentTime() {
-		log.Fatal("twepoch should < time now")
+
+// NewSnowflakeFromEnv 从环境变量 SNOWFLAKE_WORKER_ID、SNOWFLAKE_DATACENTER_ID（0~31）读取；非法则忽略该项。
+func NewSnowflakeFromEnv() *Snowflake {
+	s := NewSnowflake()
+	if v := os.Getenv("SNOWFLAKE_WORKER_ID"); v != "" {
+		if w, e := strconv.ParseInt(v, 10, 64); e == nil && w >= 0 && w <= MAX_WORKER_ID {
+			s.workerId = w
+		}
 	}
-	if twepoch < DEFAULT_TWEPOCH {
-		log.Fatal("twepoch should > 2022-06-19 22:00:00")
+	if v := os.Getenv("SNOWFLAKE_DATACENTER_ID"); v != "" {
+		if d, e := strconv.ParseInt(v, 10, 64); e == nil && d >= 0 && d <= MAX_DATA_CENTER_ID {
+			s.datacenterId = d
+		}
+	}
+	return s
+}
+
+// WithTwepoch 自定义纪元（毫秒），必须 <= 当前时间。
+func (s *Snowflake) WithTwepoch(twepoch int64) *Snowflake {
+	if s.err != nil {
+		return s
+	}
+	if twepoch > s.currentTime() {
+		s.err = fmt.Errorf("%w: twepoch=%d", ErrTwepochInFuture, twepoch)
+		return s
 	}
 	s.twepoch = twepoch
 	return s
 }
+
 func (s *Snowflake) WithWorkerId(workerId int64) *Snowflake {
-	if workerId > MAX_WORKER_ID || workerId < 0 {
-		log.Fatal("workerId should 0~31")
+	if s.err != nil {
+		return s
+	}
+	if workerId < 0 || workerId > MAX_WORKER_ID {
+		s.err = fmt.Errorf("%w: %d", ErrInvalidWorkerID, workerId)
+		return s
 	}
 	s.workerId = workerId
 	return s
 }
+
 func (s *Snowflake) WithDatacenterId(datacenterId int64) *Snowflake {
-	if datacenterId > MAX_DATA_CENTER_ID || datacenterId < 0 {
-		log.Fatal("datacenterId should 0~31")
+	if s.err != nil {
+		return s
+	}
+	if datacenterId < 0 || datacenterId > MAX_DATA_CENTER_ID {
+		s.err = fmt.Errorf("%w: %d", ErrInvalidDatacenterID, datacenterId)
+		return s
 	}
 	s.datacenterId = datacenterId
 	return s
 }
-func (s *Snowflake) String() string {
-	return strconv.FormatInt(s.NextId(), 10)
-}
-func (s *Snowflake) NextId() int64 {
+
+// NextID 生成下一个 ID。
+func (s *Snowflake) NextID() (int64, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	timestamp := s.currentTime()
 	if timestamp < s.lastTimestamp {
-		// panic(errors.New("系统时间异常"))
-		log.Fatal("system time error")
+		return 0, fmt.Errorf("%w: last=%d current=%d", ErrClockMovedBackwards, s.lastTimestamp, timestamp)
 	}
+
 	if s.lastTimestamp == timestamp {
 		s.sequence = (s.sequence + 1) & SEQUENCE_MASK
 		if s.sequence == 0 {
-			timestamp = s.tilNextMillis()
+			var err error
+			timestamp, err = s.tilNextMillis()
+			if err != nil {
+				return 0, err
+			}
 		}
 	} else {
 		s.sequence = 0
 	}
+
 	s.lastTimestamp = timestamp
 	id := ((timestamp - s.twepoch) << TIMESTAMP_LEFT_SHIFT) |
 		(s.datacenterId << DATA_CENTER_ID_SHIFT) |
 		(s.workerId << WORKER_ID_SHIFT) |
 		s.sequence
+	return id, nil
+}
+
+// NextId 兼容旧 API：出错时 panic。新代码请用 NextID。
+func (s *Snowflake) NextId() int64 {
+	id, err := s.NextID()
+	if err != nil {
+		panic(err)
+	}
 	return id
 }
 
-// 等待下一秒
-func (s *Snowflake) tilNextMillis() int64 {
-	timestamp := s.currentTime()
-	for timestamp <= s.lastTimestamp {
-		timestamp = s.currentTime()
+// NextString 返回 NextID 的十进制字符串。
+func (s *Snowflake) NextString() (string, error) {
+	id, err := s.NextID()
+	if err != nil {
+		return "", err
 	}
-	return timestamp
+	return strconv.FormatInt(id, 10), nil
 }
 
-// 当前时间戳
+// String 实现 fmt.Stringer；语义为再生成一个 ID 的字符串（易误解，优先用 NextString）。
+func (s *Snowflake) String() string {
+	str, err := s.NextString()
+	if err != nil {
+		panic(err)
+	}
+	return str
+}
+
+func (s *Snowflake) tilNextMillis() (int64, error) {
+	var n int
+	for {
+		timestamp := s.currentTime()
+		if timestamp > s.lastTimestamp {
+			return timestamp, nil
+		}
+		n++
+		if n >= maxTimeSpinIterations {
+			return 0, ErrTimeNotAdvancing
+		}
+	}
+}
+
 func (s *Snowflake) currentTime() int64 {
-	return time.Now().UnixNano() / 1e6
+	return time.Now().UnixMilli()
 }
 
+// ID 全局默认实例。
 var ID *Snowflake
 
 func init() {
-	ID = NewSnowflake()
+	ID = NewSnowflakeFromEnv()
 }
 
+// NextID 使用全局默认实例。
+func NextID() (int64, error) {
+	return ID.NextID()
+}
+
+// NextId 使用全局默认实例，出错 panic。
 func NextId() int64 {
 	return ID.NextId()
 }
+
+// String 使用全局实例生成一个 ID 的十进制字符串（与历史版本兼容；出错时 panic，与 NextId 一致）。
 func String() string {
-	return strconv.FormatInt(ID.NextId(), 10)
+	return strconv.FormatInt(NextId(), 10)
 }
